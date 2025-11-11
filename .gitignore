@@ -29,6 +29,10 @@ ENV/
 .venv/
 .env/
 
+# Node modules
+node_modules/
+package-lock.json
+
 # Environment variables
 .env
 .env.local
