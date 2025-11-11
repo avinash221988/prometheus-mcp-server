@@ -74,7 +74,7 @@ npx @modelcontextprotocol/inspector python -m prometheus_mcp_server.simple_serve
 
 or try 
 
-npx @modelcontextprotocol/inspector -e "PROMETHEUS_URL=https://your-prometheus-url.com"
+npx @modelcontextprotocol/inspector -e "PROMETHEUS_URL=https://platform-prometheus-external.tools.pit.prod.gspcloud.com/"
 ```
 
 The inspector will open at: `http://localhost:6274`

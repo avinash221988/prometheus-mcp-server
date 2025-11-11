@@ -21,8 +21,8 @@ else
     PROMETHEUS_URL="${PROMETHEUS_URL:-http://localhost:9090}"
 fi
 
-# Use Node 22 (required for MCP Inspector)
-export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+# Use latest Node.js from Homebrew (required for MCP Inspector)
+export PATH="/opt/homebrew/bin:$PATH"
 
 # Use Python 3.13 (required for FastMCP)
 PYTHON_BIN="/opt/homebrew/bin/python3.13"
