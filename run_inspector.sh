@@ -2,6 +2,13 @@
 
 # Run MCP Inspector against Prometheus MCP Server
 # This script starts the MCP Inspector in the background
+#
+# Usage:
+#   ./run_inspector.sh                                    # Uses default http://localhost:9090
+#   ./run_inspector.sh https://your-prometheus-url.com   # Uses custom Prometheus URL
+#
+# Environment variables:
+#   PROMETHEUS_URL - Set to override the Prometheus URL
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -49,8 +56,19 @@ fi
 echo "🚀 Starting MCP Inspector in background..."
 echo ""
 
+# Set Prometheus URL if provided as argument
+if [ -n "$1" ]; then
+    export PROMETHEUS_URL="$1"
+    echo "Using Prometheus URL: $PROMETHEUS_URL"
+    echo ""
+else
+    # Use default if not set
+    export PROMETHEUS_URL="${PROMETHEUS_URL:-http://localhost:9090}"
+fi
+
 # Run in background and save PID
-npx @modelcontextprotocol/inspector python -m prometheus_mcp_server.simple_server > /tmp/mcp_inspector.log 2>&1 &
+# Use wrapper script to ensure environment variables are passed through
+npx @modelcontextprotocol/inspector ./mcp_server_wrapper.sh > /tmp/mcp_inspector.log 2>&1 &
 INSPECTOR_PID=$!
 
 # Wait a moment for it to start
