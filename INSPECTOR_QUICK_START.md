@@ -2,9 +2,14 @@
 
 ## 🚀 Start the Inspector
 
-Simply run:
+### Default (localhost Prometheus)
 ```bash
 ./run_inspector.sh
+```
+
+### With Custom Prometheus URL
+```bash
+./run_inspector.sh "https://your-prometheus-url.com"
 ```
 
 That's it! The script will:
@@ -12,6 +17,7 @@ That's it! The script will:
 - ✅ Use Python 3.13 (required for FastMCP)
 - ✅ Create venv if it doesn't exist
 - ✅ Install dependencies
+- ✅ Pass the Prometheus URL to the MCP server
 - ✅ Start the inspector in the background
 - ✅ Show you the URL to access it
 
@@ -32,16 +38,24 @@ Open that URL in your browser. The token is automatically included in the URL.
 
 ---
 
-## 📋 What the Script Does
+## 📋 How It Works
 
+### run_inspector.sh
 1. **Navigates to the project directory** - Uses relative paths so it works from anywhere
 2. **Sets up Node 22** - Required for MCP Inspector
 3. **Sets up Python 3.13** - Required for FastMCP
 4. **Creates venv** - Only if it doesn't exist
 5. **Installs dependencies** - Runs `pip install -e .`
-6. **Checks if already running** - Won't start duplicate instances
-7. **Starts in background** - Doesn't block your terminal
-8. **Logs to `/tmp/mcp_inspector.log`** - Easy to debug
+6. **Accepts Prometheus URL** - As first argument or via `PROMETHEUS_URL` env var
+7. **Checks if already running** - Won't start duplicate instances
+8. **Starts in background** - Doesn't block your terminal
+9. **Logs to `/tmp/mcp_inspector.log`** - Easy to debug
+
+### mcp_server_wrapper.sh
+- **Wrapper script** that ensures environment variables are properly passed to the MCP server
+- **Activates venv** with all dependencies
+- **Sets PROMETHEUS_URL** from environment or uses default
+- **Runs the MCP server** with proper configuration
 
 ---
 
@@ -101,6 +115,29 @@ In the Inspector UI, you can:
 - `prometheus_memory` - Memory metrics
 - `prometheus_services` - Service status
 - `alertmanager_silence` - Silence alerts
+
+---
+
+## 🔧 Environment Variables
+
+### PROMETHEUS_URL
+Controls which Prometheus instance the MCP server connects to.
+
+**Set via command line:**
+```bash
+./run_inspector.sh "https://your-prometheus-url.com"
+```
+
+**Set via environment variable:**
+```bash
+export PROMETHEUS_URL="https://your-prometheus-url.com"
+./run_inspector.sh
+```
+
+**Default:**
+```
+http://localhost:9090
+```
 
 ---
 
