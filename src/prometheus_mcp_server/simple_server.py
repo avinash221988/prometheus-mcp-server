@@ -15,6 +15,7 @@ import httpx
 # Simple configuration from environment
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 PROMETHEUS_TIMEOUT = int(os.getenv("PROMETHEUS_TIMEOUT", "30"))
+ALERTMANAGER_URL = os.getenv("ALERTMANAGER_URL", "http://localhost:9093")
 
 # Create FastMCP app
 mcp = FastMCP("Prometheus MCP Server")
@@ -22,11 +23,11 @@ mcp = FastMCP("Prometheus MCP Server")
 
 class PrometheusClient:
     """Simple Prometheus client for basic queries."""
-    
+
     def __init__(self, url: str, timeout: int = 30):
         self.url = url.rstrip('/')
         self.timeout = timeout
-    
+
     async def query(self, promql: str) -> Dict[str, Any]:
         """Execute a simple PromQL query."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -36,7 +37,7 @@ class PrometheusClient:
             )
             response.raise_for_status()
             return response.json()
-    
+
     async def health_check(self) -> Dict[str, Any]:
         """Check Prometheus health."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -47,8 +48,43 @@ class PrometheusClient:
             }
 
 
-# Global client instance
+class AlertmanagerClient:
+    """Simple Alertmanager client for alert management."""
+
+    def __init__(self, url: str, timeout: int = 30):
+        self.url = url.rstrip('/')
+        self.timeout = timeout
+
+    async def get_alerts(self, active: bool = True) -> Dict[str, Any]:
+        """Get alerts from Alertmanager."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            params = {"active": "true"} if active else {}
+            response = await client.get(f"{self.url}/api/v1/alerts", params=params)
+            response.raise_for_status()
+            return response.json()
+
+    async def silence_alert(self, matchers: list, duration: str, created_by: str, comment: str) -> Dict[str, Any]:
+        """Create an alert silence."""
+        silence_data = {
+            "matchers": matchers,
+            "startsAt": datetime.utcnow().isoformat() + "Z",
+            "endsAt": (datetime.utcnow() + timedelta(hours=int(duration.rstrip('h')))).isoformat() + "Z",
+            "createdBy": created_by,
+            "comment": comment
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.url}/api/v1/silences",
+                json=silence_data
+            )
+            response.raise_for_status()
+            return response.json()
+
+
+# Global client instances
 prometheus = PrometheusClient(PROMETHEUS_URL, PROMETHEUS_TIMEOUT)
+alertmanager = AlertmanagerClient(ALERTMANAGER_URL, PROMETHEUS_TIMEOUT)
 
 @mcp.resource("prometheus://alerts/firing")
 async def get_firing_alerts() -> str:
@@ -198,54 +234,39 @@ async def prometheus_services() -> str:
     """
     return await prometheus_query("up")
 
-class AlertmanagerClient:
-    def __init__(self, url: str, timeout: int = 30):
-        self.url = url.rstrip('/')
-        self.timeout = timeout
 
-    async def get_alerts(self, active: bool = True) -> Dict[str, Any]:
-        """Get alerts from Alertmanager."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            params = {"active": "true"} if active else {}
-            response = await client.get(f"{self.url}/api/v1/alerts", params=params)
-            response.raise_for_status()
-            return response.json()
+@mcp.tool()
+async def alertmanager_get_alerts(active: bool = True) -> str:
+    """
+    Get alerts from Alertmanager.
 
-    async def silence_alert(self, matchers: list, duration: str, created_by: str, comment: str) -> Dict[str, Any]:
-        """Create an alert silence."""
-        silence_data = {
-            "matchers": matchers,
-            "startsAt": datetime.utcnow().isoformat() + "Z",
-            "endsAt": (datetime.utcnow() + timedelta(hours=int(duration.rstrip('h')))).isoformat() + "Z",
-            "createdBy": created_by,
-            "comment": comment
-        }
-        
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.url}/api/v1/silences",
-                json=silence_data
-            )
-            response.raise_for_status()
-            return response.json()
+    Args:
+        active: If True, only return active alerts. If False, return all alerts.
+
+    Returns:
+        JSON formatted list of alerts from Alertmanager
+    """
+    try:
+        result = await alertmanager.get_alerts(active=active)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error getting alerts from Alertmanager: {e}"
+
 
 @mcp.tool()
 async def alertmanager_silence(alert_name: str, duration: str, reason: str, created_by: str = "mcp-server") -> str:
     """
     Silence an alert in Alertmanager.
-    
+
     Args:
         alert_name: Name of the alert to silence
         duration: Duration like '2h', '30m'
         reason: Reason for silencing
         created_by: Who is creating the silence
     """
-    if not hasattr(prometheus, 'alertmanager'):
-        return "Error: Alertmanager not configured"
-    
     try:
         matchers = [{"name": "alertname", "value": alert_name, "isRegex": False}]
-        result = await prometheus.alertmanager.silence_alert(matchers, duration, created_by, reason)
+        result = await alertmanager.silence_alert(matchers, duration, created_by, reason)
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"Error creating silence: {e}"
