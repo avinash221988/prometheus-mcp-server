@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # Run MCP Inspector against Prometheus MCP Server
+# This script starts the MCP Inspector in the background
 
-cd /Users/abh551/prometheus-mcp-server
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
 
 # Use Node 22 (required for MCP Inspector)
 export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
@@ -31,12 +34,45 @@ echo "=========================================="
 echo "Node version: $(node --version)"
 echo "Python version: $(python --version)"
 echo ""
-echo "🚀 MCP Inspector will be available at:"
-echo "   http://localhost:6274"
-echo ""
-echo "Press Ctrl+C to stop"
-echo "=========================================="
+
+# Check if already running
+if lsof -i :6277 > /dev/null 2>&1; then
+    echo "⚠️  Inspector is already running on port 6277"
+    echo ""
+    echo "🚀 MCP Inspector is available at:"
+    echo "   http://localhost:6274"
+    echo ""
+    echo "To stop it, run: pkill -f inspector"
+    exit 0
+fi
+
+echo "🚀 Starting MCP Inspector in background..."
 echo ""
 
-npx @modelcontextprotocol/inspector python -m prometheus_mcp_server.simple_server
+# Run in background and save PID
+npx @modelcontextprotocol/inspector python -m prometheus_mcp_server.simple_server > /tmp/mcp_inspector.log 2>&1 &
+INSPECTOR_PID=$!
+
+# Wait a moment for it to start
+sleep 3
+
+# Check if it started successfully
+if ps -p $INSPECTOR_PID > /dev/null; then
+    echo "✅ Inspector started successfully (PID: $INSPECTOR_PID)"
+    echo ""
+    echo "🌐 MCP Inspector is available at:"
+    echo "   http://localhost:6274"
+    echo ""
+    echo "📋 To view logs:"
+    echo "   tail -f /tmp/mcp_inspector.log"
+    echo ""
+    echo "🛑 To stop it:"
+    echo "   pkill -f inspector"
+    echo "   or"
+    echo "   kill $INSPECTOR_PID"
+else
+    echo "❌ Failed to start inspector. Check logs:"
+    cat /tmp/mcp_inspector.log
+    exit 1
+fi
 
