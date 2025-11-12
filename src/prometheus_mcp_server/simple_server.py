@@ -16,6 +16,7 @@ import httpx
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 PROMETHEUS_TIMEOUT = int(os.getenv("PROMETHEUS_TIMEOUT", "30"))
 ALERTMANAGER_URL = os.getenv("ALERTMANAGER_URL", "http://localhost:9093")
+VERIFY_SSL = os.getenv("VERIFY_SSL", "true").lower() in ("true", "1", "yes")
 
 # Create FastMCP app
 mcp = FastMCP("Prometheus MCP Server")
@@ -24,13 +25,14 @@ mcp = FastMCP("Prometheus MCP Server")
 class PrometheusClient:
     """Simple Prometheus client for basic queries."""
 
-    def __init__(self, url: str, timeout: int = 30):
+    def __init__(self, url: str, timeout: int = 30, verify_ssl: bool = True):
         self.url = url.rstrip('/')
         self.timeout = timeout
+        self.verify_ssl = verify_ssl
 
     async def query(self, promql: str) -> Dict[str, Any]:
         """Execute a simple PromQL query."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
             response = await client.get(
                 f"{self.url}/api/v1/query",
                 params={"query": promql}
@@ -40,7 +42,7 @@ class PrometheusClient:
 
     async def health_check(self) -> Dict[str, Any]:
         """Check Prometheus health."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
             response = await client.get(f"{self.url}/-/healthy")
             return {
                 "status": "healthy" if response.status_code == 200 else "unhealthy",
@@ -51,40 +53,64 @@ class PrometheusClient:
 class AlertmanagerClient:
     """Simple Alertmanager client for alert management."""
 
-    def __init__(self, url: str, timeout: int = 30):
+    def __init__(self, url: str, timeout: int = 30, verify_ssl: bool = True):
         self.url = url.rstrip('/')
         self.timeout = timeout
+        self.verify_ssl = verify_ssl
 
     async def get_alerts(self, active: bool = True) -> Dict[str, Any]:
         """Get alerts from Alertmanager."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            params = {"active": "true"} if active else {}
-            response = await client.get(f"{self.url}/api/v1/alerts", params=params)
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
+            # Alertmanager API v2 endpoint
+            response = await client.get(f"{self.url}/api/v2/alerts")
+            response.raise_for_status()
+            alerts = response.json()
+
+            # Filter for active alerts if requested
+            if active:
+                alerts = [alert for alert in alerts if alert.get('status', {}).get('state') == 'active']
+
+            return alerts
+
+    async def get_silences(self) -> Dict[str, Any]:
+        """Get all silences from Alertmanager."""
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
+            response = await client.get(f"{self.url}/api/v2/silences")
             response.raise_for_status()
             return response.json()
 
     async def silence_alert(self, matchers: list, duration: str, created_by: str, comment: str) -> Dict[str, Any]:
         """Create an alert silence."""
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+
         silence_data = {
             "matchers": matchers,
-            "startsAt": datetime.utcnow().isoformat() + "Z",
-            "endsAt": (datetime.utcnow() + timedelta(hours=int(duration.rstrip('h')))).isoformat() + "Z",
+            "startsAt": now.isoformat(),
+            "endsAt": (now + timedelta(hours=int(duration.rstrip('h')))).isoformat(),
             "createdBy": created_by,
             "comment": comment
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
             response = await client.post(
-                f"{self.url}/api/v1/silences",
+                f"{self.url}/api/v2/silences",
                 json=silence_data
             )
             response.raise_for_status()
             return response.json()
 
+    async def delete_silence(self, silence_id: str) -> Dict[str, Any]:
+        """Delete/expire a silence by ID."""
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
+            response = await client.delete(f"{self.url}/api/v2/silence/{silence_id}")
+            response.raise_for_status()
+            return {"status": "deleted", "silenceID": silence_id}
+
 
 # Global client instances
-prometheus = PrometheusClient(PROMETHEUS_URL, PROMETHEUS_TIMEOUT)
-alertmanager = AlertmanagerClient(ALERTMANAGER_URL, PROMETHEUS_TIMEOUT)
+prometheus = PrometheusClient(PROMETHEUS_URL, PROMETHEUS_TIMEOUT, VERIFY_SSL)
+alertmanager = AlertmanagerClient(ALERTMANAGER_URL, PROMETHEUS_TIMEOUT, VERIFY_SSL)
 
 @mcp.resource("prometheus://alerts/firing")
 async def get_firing_alerts() -> str:
@@ -271,6 +297,39 @@ async def alertmanager_silence(alert_name: str, duration: str, reason: str, crea
     except Exception as e:
         return f"Error creating silence: {e}"
 
+
+@mcp.tool()
+async def alertmanager_get_silences() -> str:
+    """
+    Get all silences from Alertmanager.
+
+    Returns:
+        JSON formatted list of all silences (active, pending, and expired)
+    """
+    try:
+        result = await alertmanager.get_silences()
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error getting silences from Alertmanager: {e}"
+
+
+@mcp.tool()
+async def alertmanager_delete_silence(silence_id: str) -> str:
+    """
+    Delete/expire a silence in Alertmanager.
+
+    Args:
+        silence_id: The ID of the silence to delete (e.g., from alertmanager_get_silences or alertmanager_silence)
+
+    Returns:
+        Confirmation of deletion
+    """
+    try:
+        result = await alertmanager.delete_silence(silence_id)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error deleting silence: {e}"
+
 def run_server():
     """Run the MCP server."""
     print(f"Starting Prometheus MCP Server (connecting to {PROMETHEUS_URL})")
@@ -297,7 +356,7 @@ def main():
                 PROMETHEUS_URL = sys.argv[idx + 1]
                 # Recreate client with new URL
                 global prometheus
-                prometheus = PrometheusClient(PROMETHEUS_URL, PROMETHEUS_TIMEOUT)
+                prometheus = PrometheusClient(PROMETHEUS_URL, PROMETHEUS_TIMEOUT, VERIFY_SSL)
         except (IndexError, ValueError):
             print("Error: --prometheus-url requires a URL")
             sys.exit(1)
