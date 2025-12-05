@@ -5,12 +5,11 @@ This server complements the Prometheus MCP by providing Kubernetes-specific oper
 for diagnostics, remediation, and cluster management.
 """
 
-import os
 import json
 from typing import Any, Dict, Optional
-from mcp.server import Server
-from mcp.types import Tool, TextContent
-import mcp.server.stdio
+from datetime import datetime, timezone
+
+from fastmcp import FastMCP
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
@@ -27,8 +26,8 @@ except:
 v1 = client.CoreV1Api()
 apps_v1 = client.AppsV1Api()
 
-# Initialize MCP server
-app = Server("kubernetes-mcp-server")
+# Create FastMCP app
+mcp = FastMCP("Kubernetes MCP Server")
 
 
 # ============================================================================
@@ -66,7 +65,6 @@ def format_pod_status(pod: Any) -> Dict[str, Any]:
                 "image": container.image
             }
             
-            # Container state
             if container.state.waiting:
                 container_info["state"] = "waiting"
                 container_info["reason"] = container.state.waiting.reason
@@ -88,158 +86,27 @@ def format_pod_status(pod: Any) -> Dict[str, Any]:
 # MCP Tools
 # ============================================================================
 
-@app.list_tools()
-async def list_tools() -> list[Tool]:
-    """List available Kubernetes tools."""
-    return [
-        Tool(
-            name="k8s_get_pod",
-            description="Get detailed information about a specific pod",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Pod name"},
-                    "namespace": {"type": "string", "description": "Namespace (default: default)"}
-                },
-                "required": ["name"]
-            }
-        ),
-        Tool(
-            name="k8s_list_pods",
-            description="List pods in a namespace with optional label selector",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "namespace": {"type": "string", "description": "Namespace (default: all)"},
-                    "label_selector": {"type": "string", "description": "Label selector (e.g., app=nginx)"}
-                }
-            }
-        ),
-        Tool(
-            name="k8s_get_pod_logs",
-            description="Get logs from a pod container",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Pod name"},
-                    "namespace": {"type": "string", "description": "Namespace (default: default)"},
-                    "container": {"type": "string", "description": "Container name (optional)"},
-                    "tail_lines": {"type": "integer", "description": "Number of lines to tail (default: 100)"}
-                },
-                "required": ["name"]
-            }
-        ),
-        Tool(
-            name="k8s_get_events",
-            description="Get events for a pod or namespace",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "namespace": {"type": "string", "description": "Namespace"},
-                    "pod_name": {"type": "string", "description": "Filter by pod name (optional)"}
-                },
-                "required": ["namespace"]
-            }
-        ),
-        Tool(
-            name="k8s_delete_pod",
-            description="Delete a pod (useful for forcing recreation)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Pod name"},
-                    "namespace": {"type": "string", "description": "Namespace (default: default)"}
-                },
-                "required": ["name"]
-            }
-        ),
-        Tool(
-            name="k8s_get_deployment",
-            description="Get deployment information",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Deployment name"},
-                    "namespace": {"type": "string", "description": "Namespace (default: default)"}
-                },
-                "required": ["name"]
-            }
-        ),
-        Tool(
-            name="k8s_scale_deployment",
-            description="Scale a deployment to a specific number of replicas",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Deployment name"},
-                    "namespace": {"type": "string", "description": "Namespace (default: default)"},
-                    "replicas": {"type": "integer", "description": "Number of replicas"}
-                },
-                "required": ["name", "replicas"]
-            }
-        ),
-        Tool(
-            name="k8s_restart_deployment",
-            description="Restart a deployment by updating its annotation",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Deployment name"},
-                    "namespace": {"type": "string", "description": "Namespace (default: default)"}
-                },
-                "required": ["name"]
-            }
-        ),
-    ]
-
-
-@app.call_tool()
-async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-    """Handle tool calls."""
-
-    try:
-        if name == "k8s_get_pod":
-            return await get_pod(arguments)
-        elif name == "k8s_list_pods":
-            return await list_pods(arguments)
-        elif name == "k8s_get_pod_logs":
-            return await get_pod_logs(arguments)
-        elif name == "k8s_get_events":
-            return await get_events(arguments)
-        elif name == "k8s_delete_pod":
-            return await delete_pod(arguments)
-        elif name == "k8s_get_deployment":
-            return await get_deployment(arguments)
-        elif name == "k8s_scale_deployment":
-            return await scale_deployment(arguments)
-        elif name == "k8s_restart_deployment":
-            return await restart_deployment(arguments)
-        else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
-
-    except Exception as e:
-        return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-
-# ============================================================================
-# Tool Implementations
-# ============================================================================
-
-async def get_pod(args: Dict[str, Any]) -> list[TextContent]:
-    """Get detailed pod information."""
-    name = args["name"]
-    namespace = args.get("namespace", "default")
-
+@mcp.tool()
+async def k8s_get_pod(name: str, namespace: str = "default") -> str:
+    """Get detailed information about a specific pod including status, conditions, and events.
+    
+    Args:
+        name: Pod name
+        namespace: Namespace (default: default)
+    
+    Returns:
+        JSON string with pod details, status, conditions, container statuses, and events
+    """
     try:
         pod = v1.read_namespaced_pod(name=name, namespace=namespace)
         status = format_pod_status(pod)
-
+        
         # Get events for this pod
         events = v1.list_namespaced_event(
             namespace=namespace,
             field_selector=f"involvedObject.name={name}"
         )
-
+        
         for event in events.items:
             status["events"].append({
                 "type": event.type,
@@ -249,66 +116,75 @@ async def get_pod(args: Dict[str, Any]) -> list[TextContent]:
                 "first_timestamp": str(event.first_timestamp),
                 "last_timestamp": str(event.last_timestamp)
             })
-
-        return [TextContent(
-            type="text",
-            text=json.dumps(status, indent=2)
-        )]
-
+        
+        return json.dumps(status, indent=2)
     except ApiException as e:
-        return [TextContent(
-            type="text",
-            text=f"Error getting pod: {e.reason}"
-        )]
+        return json.dumps({"error": f"Failed to get pod: {e.reason}"}, indent=2)
 
 
-async def list_pods(args: Dict[str, Any]) -> list[TextContent]:
-    """List pods in namespace."""
-    namespace = args.get("namespace")
-    label_selector = args.get("label_selector")
-
+@mcp.tool()
+async def k8s_list_pods(namespace: Optional[str] = None, label_selector: Optional[str] = None) -> str:
+    """List pods in a namespace with optional label selector.
+    
+    Args:
+        namespace: Namespace (default: all namespaces)
+        label_selector: Label selector (e.g., app=nginx)
+    
+    Returns:
+        JSON string with list of pods and their basic status
+    """
     try:
         if namespace:
             pods = v1.list_namespaced_pod(
                 namespace=namespace,
-                label_selector=label_selector
+                label_selector=label_selector or ""
             )
         else:
             pods = v1.list_pod_for_all_namespaces(
-                label_selector=label_selector
+                label_selector=label_selector or ""
             )
-
+        
         pod_list = []
         for pod in pods.items:
-            pod_list.append({
+            pod_info = {
                 "name": pod.metadata.name,
                 "namespace": pod.metadata.namespace,
                 "phase": pod.status.phase,
-                "ready": sum(1 for c in (pod.status.container_statuses or []) if c.ready),
-                "total": len(pod.status.container_statuses or []),
-                "restarts": sum(c.restart_count for c in (pod.status.container_statuses or [])),
-                "node": pod.spec.node_name
-            })
-
-        return [TextContent(
-            type="text",
-            text=json.dumps(pod_list, indent=2)
-        )]
-
+                "ready": "0/0",
+                "restarts": 0
+            }
+            
+            if pod.status.container_statuses:
+                ready_count = sum(1 for c in pod.status.container_statuses if c.ready)
+                total_count = len(pod.status.container_statuses)
+                pod_info["ready"] = f"{ready_count}/{total_count}"
+                pod_info["restarts"] = sum(c.restart_count for c in pod.status.container_statuses)
+            
+            pod_list.append(pod_info)
+        
+        return json.dumps(pod_list, indent=2)
     except ApiException as e:
-        return [TextContent(
-            type="text",
-            text=f"Error listing pods: {e.reason}"
-        )]
+        return json.dumps({"error": f"Failed to list pods: {e.reason}"}, indent=2)
 
 
-async def get_pod_logs(args: Dict[str, Any]) -> list[TextContent]:
-    """Get pod logs."""
-    name = args["name"]
-    namespace = args.get("namespace", "default")
-    container = args.get("container")
-    tail_lines = args.get("tail_lines", 100)
+@mcp.tool()
+async def k8s_get_pod_logs(
+    name: str,
+    namespace: str = "default",
+    container: Optional[str] = None,
+    tail_lines: int = 100
+) -> str:
+    """Get logs from a pod container.
 
+    Args:
+        name: Pod name
+        namespace: Namespace (default: default)
+        container: Container name (optional, uses first container if not specified)
+        tail_lines: Number of lines to tail (default: 100)
+
+    Returns:
+        Pod logs as a string
+    """
     try:
         logs = v1.read_namespaced_pod_log(
             name=name,
@@ -316,24 +192,22 @@ async def get_pod_logs(args: Dict[str, Any]) -> list[TextContent]:
             container=container,
             tail_lines=tail_lines
         )
-
-        return [TextContent(
-            type="text",
-            text=f"Logs for pod {name} (last {tail_lines} lines):\n\n{logs}"
-        )]
-
+        return f"Logs for pod {name} (last {tail_lines} lines):\n\n{logs}"
     except ApiException as e:
-        return [TextContent(
-            type="text",
-            text=f"Error getting logs: {e.reason}"
-        )]
+        return f"Error getting logs: {e.reason}"
 
 
-async def get_events(args: Dict[str, Any]) -> list[TextContent]:
-    """Get Kubernetes events."""
-    namespace = args["namespace"]
-    pod_name = args.get("pod_name")
+@mcp.tool()
+async def k8s_get_events(namespace: str, pod_name: Optional[str] = None) -> str:
+    """Get events for a pod or namespace.
 
+    Args:
+        namespace: Namespace
+        pod_name: Filter by pod name (optional)
+
+    Returns:
+        JSON string with events
+    """
     try:
         if pod_name:
             events = v1.list_namespaced_event(
@@ -349,64 +223,61 @@ async def get_events(args: Dict[str, Any]) -> list[TextContent]:
                 "type": event.type,
                 "reason": event.reason,
                 "message": event.message,
-                "object": f"{event.involved_object.kind}/{event.involved_object.name}",
                 "count": event.count,
-                "first_seen": str(event.first_timestamp),
-                "last_seen": str(event.last_timestamp)
+                "first_timestamp": str(event.first_timestamp),
+                "last_timestamp": str(event.last_timestamp),
+                "involved_object": {
+                    "kind": event.involved_object.kind,
+                    "name": event.involved_object.name
+                }
             })
 
-        # Sort by last_seen (most recent first)
-        event_list.sort(key=lambda x: x["last_seen"], reverse=True)
-
-        return [TextContent(
-            type="text",
-            text=json.dumps(event_list, indent=2)
-        )]
-
+        return json.dumps(event_list, indent=2)
     except ApiException as e:
-        return [TextContent(
-            type="text",
-            text=f"Error getting events: {e.reason}"
-        )]
+        return json.dumps({"error": f"Failed to get events: {e.reason}"}, indent=2)
 
 
-async def delete_pod(args: Dict[str, Any]) -> list[TextContent]:
-    """Delete a pod."""
-    name = args["name"]
-    namespace = args.get("namespace", "default")
+@mcp.tool()
+async def k8s_delete_pod(name: str, namespace: str = "default") -> str:
+    """Delete a pod (useful for forcing recreation).
 
+    Args:
+        name: Pod name
+        namespace: Namespace (default: default)
+
+    Returns:
+        Success or error message
+    """
     try:
         v1.delete_namespaced_pod(name=name, namespace=namespace)
-
-        return [TextContent(
-            type="text",
-            text=f"Pod {name} in namespace {namespace} deleted successfully"
-        )]
-
+        return f"Pod {name} in namespace {namespace} deleted successfully"
     except ApiException as e:
-        return [TextContent(
-            type="text",
-            text=f"Error deleting pod: {e.reason}"
-        )]
+        return f"Error deleting pod: {e.reason}"
 
 
-async def get_deployment(args: Dict[str, Any]) -> list[TextContent]:
-    """Get deployment information."""
-    name = args["name"]
-    namespace = args.get("namespace", "default")
+@mcp.tool()
+async def k8s_get_deployment(name: str, namespace: str = "default") -> str:
+    """Get deployment information including replica status.
 
+    Args:
+        name: Deployment name
+        namespace: Namespace (default: default)
+
+    Returns:
+        JSON string with deployment details
+    """
     try:
         deployment = apps_v1.read_namespaced_deployment(name=name, namespace=namespace)
 
-        info = {
+        deployment_info = {
             "name": deployment.metadata.name,
             "namespace": deployment.metadata.namespace,
             "replicas": {
                 "desired": deployment.spec.replicas,
-                "current": deployment.status.replicas,
-                "ready": deployment.status.ready_replicas,
-                "available": deployment.status.available_replicas,
-                "unavailable": deployment.status.unavailable_replicas
+                "current": deployment.status.replicas or 0,
+                "ready": deployment.status.ready_replicas or 0,
+                "available": deployment.status.available_replicas or 0,
+                "unavailable": deployment.status.unavailable_replicas or 0
             },
             "strategy": deployment.spec.strategy.type,
             "conditions": []
@@ -414,109 +285,80 @@ async def get_deployment(args: Dict[str, Any]) -> list[TextContent]:
 
         if deployment.status.conditions:
             for condition in deployment.status.conditions:
-                info["conditions"].append({
+                deployment_info["conditions"].append({
                     "type": condition.type,
                     "status": condition.status,
                     "reason": condition.reason,
                     "message": condition.message
                 })
 
-        return [TextContent(
-            type="text",
-            text=json.dumps(info, indent=2)
-        )]
-
+        return json.dumps(deployment_info, indent=2)
     except ApiException as e:
-        return [TextContent(
-            type="text",
-            text=f"Error getting deployment: {e.reason}"
-        )]
+        return json.dumps({"error": f"Failed to get deployment: {e.reason}"}, indent=2)
 
 
-async def scale_deployment(args: Dict[str, Any]) -> list[TextContent]:
-    """Scale a deployment."""
-    name = args["name"]
-    namespace = args.get("namespace", "default")
-    replicas = args["replicas"]
+@mcp.tool()
+async def k8s_scale_deployment(name: str, namespace: str = "default", replicas: int = 1) -> str:
+    """Scale a deployment to a specific number of replicas.
 
+    Args:
+        name: Deployment name
+        namespace: Namespace (default: default)
+        replicas: Number of replicas
+
+    Returns:
+        Success or error message
+    """
     try:
-        # Get current deployment
         deployment = apps_v1.read_namespaced_deployment(name=name, namespace=namespace)
-
-        # Update replicas
         deployment.spec.replicas = replicas
 
-        # Patch deployment
         apps_v1.patch_namespaced_deployment(
             name=name,
             namespace=namespace,
             body=deployment
         )
 
-        return [TextContent(
-            type="text",
-            text=f"Deployment {name} scaled to {replicas} replicas"
-        )]
-
+        return f"Deployment {name} scaled to {replicas} replicas"
     except ApiException as e:
-        return [TextContent(
-            type="text",
-            text=f"Error scaling deployment: {e.reason}"
-        )]
+        return f"Error scaling deployment: {e.reason}"
 
 
-async def restart_deployment(args: Dict[str, Any]) -> list[TextContent]:
-    """Restart a deployment by updating its annotation."""
-    name = args["name"]
-    namespace = args.get("namespace", "default")
+@mcp.tool()
+async def k8s_restart_deployment(name: str, namespace: str = "default") -> str:
+    """Restart a deployment by updating its annotation (rolling restart).
 
+    Args:
+        name: Deployment name
+        namespace: Namespace (default: default)
+
+    Returns:
+        Success or error message
+    """
     try:
-        from datetime import datetime, timezone
-
-        # Get current deployment
         deployment = apps_v1.read_namespaced_deployment(name=name, namespace=namespace)
 
-        # Update restart annotation
         if not deployment.spec.template.metadata.annotations:
             deployment.spec.template.metadata.annotations = {}
 
         deployment.spec.template.metadata.annotations["kubectl.kubernetes.io/restartedAt"] = \
             datetime.now(timezone.utc).isoformat()
 
-        # Patch deployment
         apps_v1.patch_namespaced_deployment(
             name=name,
             namespace=namespace,
             body=deployment
         )
 
-        return [TextContent(
-            type="text",
-            text=f"Deployment {name} restarted successfully"
-        )]
-
+        return f"Deployment {name} restarted successfully"
     except ApiException as e:
-        return [TextContent(
-            type="text",
-            text=f"Error restarting deployment: {e.reason}"
-        )]
+        return f"Error restarting deployment: {e.reason}"
 
 
-# ============================================================================
-# Main
-# ============================================================================
-
-async def main():
-    """Run the MCP server."""
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            app.create_initialization_options()
-        )
+def main():
+    """Run the Kubernetes MCP server."""
+    mcp.run()
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
-
+    main()
