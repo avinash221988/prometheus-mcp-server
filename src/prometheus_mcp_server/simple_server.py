@@ -339,28 +339,66 @@ def run_server():
 def main():
     """Handle command line and start server."""
     import sys
-    
+
     # Simple help
     if len(sys.argv) > 1 and ("--help" in sys.argv or "-h" in sys.argv):
         print("Prometheus MCP Server")
-        print("Usage: prometheus-mcp-server [--prometheus-url URL]")
-        print("Environment: PROMETHEUS_URL (default: http://localhost:9090)")
+        print("Usage: prometheus-mcp-server [OPTIONS]")
+        print("\nOptions:")
+        print("  --prometheus-url URL       Prometheus server URL (default: http://localhost:9090)")
+        print("  --alertmanager-url URL     Alertmanager server URL (default: http://localhost:9093)")
+        print("  --timeout SECONDS          Request timeout in seconds (default: 30)")
+        print("  --no-verify-ssl            Disable SSL certificate verification")
+        print("\nEnvironment Variables:")
+        print("  PROMETHEUS_URL, ALERTMANAGER_URL, PROMETHEUS_TIMEOUT, VERIFY_SSL")
         return
-    
-    # URL override
-    if "--prometheus-url" in sys.argv:
-        try:
-            idx = sys.argv.index("--prometheus-url")
-            if idx + 1 < len(sys.argv):
-                global PROMETHEUS_URL
-                PROMETHEUS_URL = sys.argv[idx + 1]
-                # Recreate client with new URL
-                global prometheus
-                prometheus = PrometheusClient(PROMETHEUS_URL, PROMETHEUS_TIMEOUT, VERIFY_SSL)
-        except (IndexError, ValueError):
-            print("Error: --prometheus-url requires a URL")
-            sys.exit(1)
-    
+
+    # Parse command line arguments
+    global prometheus, alertmanager
+
+    # Start with defaults from environment variables
+    prom_url = PROMETHEUS_URL
+    alert_url = ALERTMANAGER_URL
+    timeout = PROMETHEUS_TIMEOUT
+    verify_ssl = VERIFY_SSL
+
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+
+        if arg == "--prometheus-url":
+            if i + 1 >= len(sys.argv):
+                print("Error: --prometheus-url requires a URL")
+                sys.exit(1)
+            prom_url = sys.argv[i + 1]
+            i += 2
+        elif arg == "--alertmanager-url":
+            if i + 1 >= len(sys.argv):
+                print("Error: --alertmanager-url requires a URL")
+                sys.exit(1)
+            alert_url = sys.argv[i + 1]
+            i += 2
+        elif arg == "--timeout":
+            if i + 1 >= len(sys.argv):
+                print("Error: --timeout requires a number")
+                sys.exit(1)
+            try:
+                timeout = int(sys.argv[i + 1])
+            except ValueError:
+                print("Error: --timeout must be a number")
+                sys.exit(1)
+            i += 2
+        elif arg == "--no-verify-ssl":
+            verify_ssl = False
+            i += 1
+        else:
+            # Skip unknown arguments (like -m from python -m)
+            i += 1
+
+    # Create clients with parsed configuration
+    prometheus = PrometheusClient(prom_url, timeout, verify_ssl)
+    alertmanager = AlertmanagerClient(alert_url, timeout, verify_ssl)
+
     run_server()
 
 
