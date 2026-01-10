@@ -29,6 +29,7 @@ classifiers = [
 dependencies = [
     "fastmcp>=0.2.0",
     "httpx>=0.25.0",
+    "kubernetes>=28.1.0",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +44,7 @@ Issues = "https://github.com/yourusername/prometheus-mcp-server/issues"
 
 [project.scripts]
 prometheus-mcp-server = "prometheus_mcp_server.simple_server:main"
+kubernetes-mcp-server = "kubernetes_mcp_server.server:main"
 
 [tool.black]
 line-length = 100
