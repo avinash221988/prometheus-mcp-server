@@ -64,22 +64,22 @@ pip install -e .
 ```
 
 ### 2. Configure
+
+**Environment Variables:**
 ```bash
-# Required: Prometheus URL
 export PROMETHEUS_URL=http://localhost:9090
-
-# Optional: Alertmanager URL
-export ALERTMANAGER_URL=http://localhost:9093
-
-# Optional: Timeout settings
-export PROMETHEUS_TIMEOUT=30
+export ALERTMANAGER_URL=http://localhost:9093  # Optional
+export PROMETHEUS_TIMEOUT=30                    # Optional, default: 30
+export VERIFY_SSL=true                          # Optional, default: true
 ```
 
-Or create a `.env` file:
+**Command-Line Arguments:**
 ```bash
-PROMETHEUS_URL=http://localhost:9090
-ALERTMANAGER_URL=http://localhost:9093
-PROMETHEUS_TIMEOUT=30
+prometheus-mcp-server \
+  --prometheus-url https://prometheus.example.com \
+  --alertmanager-url https://alertmanager.example.com \
+  --timeout 60 \
+  --no-verify-ssl  # For self-signed certificates
 ```
 
 ### 3. Test Connection
@@ -139,29 +139,14 @@ Add to your VS Code `settings.json`:
 @prometheus run query "container_memory_working_set_bytes{namespace='prod'}"
 ```
 
-## 🔧 Advanced Configuration
+## 🔧 Configuration Options
 
-### Multi-Instance Setup
-```bash
-# Connect to multiple Prometheus instances
-export PROMETHEUS_PROD_URL=https://prometheus-prod.company.com
-export PROMETHEUS_STAGING_URL=https://prometheus-staging.company.com
-```
-
-### Authentication
-```bash
-# Bearer token auth
-export PROMETHEUS_AUTH_TOKEN=your_bearer_token
-
-# Basic auth
-export PROMETHEUS_USERNAME=admin
-export PROMETHEUS_PASSWORD=secret
-```
-
-### Custom Timeout
-```bash
-export PROMETHEUS_TIMEOUT=60  # seconds
-```
+| Option | Environment Variable | Command-Line Flag | Default |
+|--------|---------------------|-------------------|---------|
+| Prometheus URL | `PROMETHEUS_URL` | `--prometheus-url` | `http://localhost:9090` |
+| Alertmanager URL | `ALERTMANAGER_URL` | `--alertmanager-url` | `http://localhost:9093` |
+| Timeout | `PROMETHEUS_TIMEOUT` | `--timeout` | `30` |
+| SSL Verification | `VERIFY_SSL` | `--no-verify-ssl` | `true` |
 
 ## 📋 Complete Tool Reference
 

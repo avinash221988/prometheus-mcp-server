@@ -80,3 +80,7 @@ logs/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# Go (if accidentally run in this directory)
+pkg/
+go.sum
