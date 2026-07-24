@@ -62,10 +62,6 @@ class KubernetesClient:
 k8s = KubernetesClient(K8S_CONTEXT, K8S_NAMESPACE)
 
 
-# ============================================================================
-# RESOURCES - Live data sources
-# ============================================================================
-
 @mcp.resource("k8s://pods")
 async def get_pods() -> str:
     """Get all pods in the current namespace."""
