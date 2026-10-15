@@ -40,6 +40,16 @@ class PrometheusClient:
             response.raise_for_status()
             return response.json()
 
+    async def query_range(self, promql: str, start: str, end: str, step: str = "60s") -> Dict[str, Any]:
+        """Execute a PromQL range query."""
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
+            response = await client.get(
+                f"{self.url}/api/v1/query_range",
+                params={"query": promql, "start": start, "end": end, "step": step}
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def health_check(self) -> Dict[str, Any]:
         """Check Prometheus health."""
         async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
@@ -133,7 +143,7 @@ async def get_dashboard_overview() -> str:
         "disk": "avg(100 - ((node_filesystem_avail_bytes{fstype!='tmpfs'} / node_filesystem_size_bytes) * 100))",
         "alerts": "count(ALERTS{alertstate='firing'})"
     }
-    
+
     overview = {}
     for name, query in queries.items():
         try:
@@ -141,21 +151,21 @@ async def get_dashboard_overview() -> str:
             overview[name] = result
         except Exception as e:
             overview[name] = {"error": str(e)}
-    
+
     return json.dumps(overview, indent=2)
 
 @mcp.prompt()
 async def analyze_alert_prompt(alert_name: str, timerange: str = "1h") -> str:
     """Generate analysis prompt for a specific alert."""
     alert_data = await prometheus.query(f'ALERTS{{alertname="{alert_name}"}}')
-    
+
     return f"""
     Analyze this Prometheus alert:
-    
+
     Alert: {alert_name}
     Time Range: {timerange}
     Data: {json.dumps(alert_data, indent=2)}
-    
+
     Please provide:
     1. Root cause analysis
     2. Impact assessment
@@ -172,7 +182,7 @@ async def performance_analysis_prompt(service: str, duration: str = "24h") -> st
         "requests": f'sum(rate(http_requests_total{{service="{service}"}}[5m]))',
         "errors": f'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[5m]))'
     }
-    
+
     metrics = {}
     for name, query in queries.items():
         try:
@@ -180,12 +190,12 @@ async def performance_analysis_prompt(service: str, duration: str = "24h") -> st
             metrics[name] = result
         except Exception as e:
             metrics[name] = {"error": str(e)}
-    
+
     return f"""
     Performance Analysis for {service} (Last {duration}):
-    
+
     Metrics: {json.dumps(metrics, indent=2)}
-    
+
     Please analyze:
     1. Performance trends
     2. Bottlenecks identification
@@ -197,10 +207,10 @@ async def performance_analysis_prompt(service: str, duration: str = "24h") -> st
 async def prometheus_query(query: str) -> str:
     """
     Execute a PromQL query against Prometheus.
-    
+
     Args:
         query: PromQL query string (e.g., 'up', 'cpu_usage_percent')
-    
+
     Returns:
         JSON formatted query results
     """
@@ -212,10 +222,31 @@ async def prometheus_query(query: str) -> str:
 
 
 @mcp.tool()
+async def prometheus_query_range(query: str, start: str, end: str, step: str = "60s") -> str:
+    """
+    Execute a PromQL range query against Prometheus.
+
+    Args:
+        query: PromQL query string
+        start: Start time (RFC3339 or Unix timestamp, e.g. '2026-07-24T00:00:00Z' or '1784880000')
+        end: End time (RFC3339 or Unix timestamp, e.g. '2026-07-24T12:00:00Z' or '1784923200')
+        step: Query resolution step (e.g. '60s', '5m', '1h')
+
+    Returns:
+        JSON formatted range query results with matrix data
+    """
+    try:
+        result = await prometheus.query_range(query, start, end, step)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error executing range query: {e}"
+
+
+@mcp.tool()
 async def prometheus_health() -> str:
     """
     Check Prometheus server health status.
-    
+
     Returns:
         Health status information
     """
@@ -230,7 +261,7 @@ async def prometheus_health() -> str:
 async def prometheus_cpu() -> str:
     """
     Get current CPU usage across all instances.
-    
+
     Returns:
         CPU usage metrics
     """
@@ -242,7 +273,7 @@ async def prometheus_cpu() -> str:
 async def prometheus_memory() -> str:
     """
     Get current memory usage across all instances.
-    
+
     Returns:
         Memory usage metrics
     """
@@ -254,7 +285,7 @@ async def prometheus_memory() -> str:
 async def prometheus_services() -> str:
     """
     Check which services are up/down.
-    
+
     Returns:
         Service status information
     """

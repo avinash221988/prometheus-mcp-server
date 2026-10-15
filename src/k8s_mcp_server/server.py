@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from fastmcp import FastMCP
-from kubernetes import client, config
+from kubernetes import client, config, dynamic
 from kubernetes.client.rest import ApiException
 
 # Configuration from environment
@@ -34,6 +34,15 @@ class KubernetesClient:
         self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
         self.events_v1 = client.EventsV1Api()
+        self.api_client = client.ApiClient()
+        self._dynamic_client = None
+
+    @property
+    def dynamic_client(self):
+        """Lazy-initialize the dynamic client (does API discovery on first access)."""
+        if self._dynamic_client is None:
+            self._dynamic_client = dynamic.DynamicClient(self.api_client)
+        return self._dynamic_client
 
     def _load_config(self):
         """Load kubeconfig with optional context."""
@@ -127,7 +136,7 @@ async def get_namespaces() -> str:
 # ============================================================================
 
 @mcp.tool()
-async def k8s_get_pod_logs(pod_name: str, namespace: str = "", tail: int = 100) -> str:
+async def k8s_get_pod_logs(pod_name: str, namespace: str = "", tail: int = 100, previous: bool = False) -> str:
     """
     Get logs from a specific pod.
 
@@ -135,6 +144,7 @@ async def k8s_get_pod_logs(pod_name: str, namespace: str = "", tail: int = 100) 
         pod_name: Name of the pod
         namespace: Namespace (uses default if not specified)
         tail: Number of lines to tail (default: 100)
+        previous: If True, return logs from the previously terminated container (default: False)
 
     Returns:
         Pod logs
@@ -144,7 +154,8 @@ async def k8s_get_pod_logs(pod_name: str, namespace: str = "", tail: int = 100) 
         logs = k8s.core_v1.read_namespaced_pod_log(
             name=pod_name,
             namespace=ns,
-            tail_lines=tail
+            tail_lines=tail,
+            previous=previous
         )
         return logs
     except ApiException as e:
@@ -180,12 +191,12 @@ async def k8s_describe_pod(pod_name: str, namespace: str = "") -> str:
         description += f"Labels:               {pod.metadata.labels or {}}\n"
         description += f"Annotations:          {pod.metadata.annotations or '<none>'}\n"
         description += f"Status:               {pod.status.phase}\n"
-        description += f"IP:                   {pod.status.pod_ip or 'N/A'}\n"
+        description += f"IP:                   {getattr(pod.status, 'pod_ip', None) or 'N/A'}\n"
 
-        if pod.status.pod_ips:
-            description += "IPs:\n"
-            for ip in pod.status.pod_ips:
-                description += f"  IP:           {ip.ip}\n"
+        for ip in (getattr(pod.status, 'pod_ips', None) or []):
+            if not hasattr(ip, 'ip'):
+                continue
+            description += f"  IP:           {ip.ip}\n"
 
         if pod.metadata.owner_references:
             for owner in pod.metadata.owner_references:
@@ -228,8 +239,8 @@ async def k8s_describe_pod(pod_name: str, namespace: str = "") -> str:
 
             if container.liveness_probe:
                 description += f"    Liveness:     {container.liveness_probe.to_dict()}\n"
-            if container.environment:
-                description += f"    Environment:  {container.environment or '<none>'}\n"
+            if container.env:
+                description += f"    Environment:  <set>\n"
             if container.volume_mounts:
                 description += f"    Mounts:\n"
                 for vm in container.volume_mounts:
@@ -456,6 +467,149 @@ async def k8s_get_pod_status(namespace: str = "") -> str:
                 summary["unknown"] += 1
 
         return json.dumps(summary, indent=2)
+    except ApiException as e:
+        return json.dumps(k8s._handle_api_exception(e), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def k8s_list_deployments(namespace: str = "", label_selector: str = "") -> str:
+    """
+    List deployments in a namespace.
+
+    Args:
+        namespace: Namespace (uses default if not specified)
+        label_selector: Optional label selector to filter deployments (e.g. 'app=myapp')
+
+    Returns:
+        List of deployments with replica status
+    """
+    ns = namespace or k8s.namespace
+    try:
+        kwargs = {"namespace": ns}
+        if label_selector:
+            kwargs["label_selector"] = label_selector
+        deployments = k8s.apps_v1.list_namespaced_deployment(**kwargs)
+
+        result = {
+            "namespace": ns,
+            "total": len(deployments.items),
+            "deployments": []
+        }
+        for dep in deployments.items:
+            result["deployments"].append({
+                "name": dep.metadata.name,
+                "replicas": dep.spec.replicas,
+                "ready_replicas": dep.status.ready_replicas or 0,
+                "available_replicas": dep.status.available_replicas or 0,
+                "updated_replicas": dep.status.updated_replicas or 0,
+                "conditions": [
+                    {"type": c.type, "status": c.status, "reason": c.reason}
+                    for c in (dep.status.conditions or [])
+                ]
+            })
+        return json.dumps(result, indent=2)
+    except ApiException as e:
+        return json.dumps(k8s._handle_api_exception(e), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def k8s_list_namespaces() -> str:
+    """
+    List all namespaces in the cluster.
+
+    Returns:
+        List of namespace names and their status
+    """
+    try:
+        namespaces = k8s.core_v1.list_namespace()
+        result = {
+            "total": len(namespaces.items),
+            "namespaces": [
+                {
+                    "name": ns.metadata.name,
+                    "status": ns.status.phase,
+                    "labels": ns.metadata.labels or {}
+                }
+                for ns in namespaces.items
+            ]
+        }
+        return json.dumps(result, indent=2)
+    except ApiException as e:
+        return json.dumps(k8s._handle_api_exception(e), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def k8s_get_resource(api_version: str, kind: str, name: str, namespace: str = "") -> str:
+    """
+    Get a specific Kubernetes resource by apiVersion, kind, and name.
+    Works with any resource type including CRDs (e.g. HNCConfiguration, VirtualMachine).
+
+    Args:
+        api_version: API version (e.g. 'v1', 'apps/v1', 'hnc.x-k8s.io/v1alpha2')
+        kind: Resource kind (e.g. 'Pod', 'Deployment', 'HNCConfiguration')
+        name: Name of the resource
+        namespace: Namespace for namespaced resources (empty for cluster-scoped)
+
+    Returns:
+        Resource details in JSON format
+    """
+    try:
+        resource = k8s.dynamic_client.resources.get(api_version=api_version, kind=kind)
+        if namespace:
+            obj = resource.get(name=name, namespace=namespace)
+        else:
+            obj = resource.get(name=name)
+        return json.dumps(obj.to_dict(), indent=2, default=str)
+    except ApiException as e:
+        return json.dumps(k8s._handle_api_exception(e), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def k8s_list_resources(api_version: str, kind: str, namespace: str = "", label_selector: str = "") -> str:
+    """
+    List Kubernetes resources by apiVersion and kind.
+    Works with any resource type including CRDs.
+
+    Args:
+        api_version: API version (e.g. 'v1', 'apps/v1', 'networking.k8s.io/v1')
+        kind: Resource kind (e.g. 'Service', 'Ingress', 'ConfigMap')
+        namespace: Namespace for namespaced resources (empty for all namespaces or cluster-scoped)
+        label_selector: Optional label selector (e.g. 'app=myapp')
+
+    Returns:
+        List of resources in JSON format
+    """
+    try:
+        resource = k8s.dynamic_client.resources.get(api_version=api_version, kind=kind)
+        kwargs = {}
+        if namespace:
+            kwargs["namespace"] = namespace
+        if label_selector:
+            kwargs["label_selector"] = label_selector
+        obj_list = resource.get(**kwargs)
+
+        items = []
+        for item in obj_list.items:
+            items.append({
+                "name": item.metadata.name,
+                "namespace": getattr(item.metadata, "namespace", None),
+                "labels": dict(item.metadata.get("labels", {}) or {}),
+                "creation_timestamp": str(item.metadata.get("creationTimestamp", ""))
+            })
+        return json.dumps({
+            "api_version": api_version,
+            "kind": kind,
+            "total": len(items),
+            "items": items
+        }, indent=2, default=str)
     except ApiException as e:
         return json.dumps(k8s._handle_api_exception(e), indent=2)
     except Exception as e:
